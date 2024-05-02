@@ -66,7 +66,7 @@ public class PubSub : RedisBase
 
             //var rs = await client.ExecuteAsync<String[]>(null, new Object[] { new Object() }, source2.Token);
             var rs = await client.ReadMoreAsync<String[]>(source2.Token);
-            if (rs.Length == 3 && rs[0] == "message") onMessage(rs[1], rs[2]);
+            if (rs != null && rs.Length == 3 && rs[0] == "message") onMessage(rs[1], rs[2]);
         }
 
         await client.ExecuteAsync<String[]>("SUBSCRIBE", channels);
@@ -87,7 +87,7 @@ public class PubSub : RedisBase
     /// <summary>发布消息</summary>
     /// <param name="message">消息内容</param>
     /// <returns>返回接收到消息的客户端个数</returns>
-    public Int32 Publish(String message) => Execute(rc => rc.Execute<Int32>("PUBLISH", Key, message), true);
+    public Int32 Publish(String message) => Execute((rc, k) => rc.Execute<Int32>("PUBLISH", Key, message), true);
 
     ///// <summary>自省</summary>
     ///// <returns></returns>

@@ -1,5 +1,5 @@
 ﻿using System.Collections.Concurrent;
-using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using NewLife.Caching.Clusters;
 using NewLife.Caching.Models;
@@ -7,6 +7,7 @@ using NewLife.Caching.Queues;
 using NewLife.Collections;
 using NewLife.Data;
 using NewLife.Log;
+using NewLife.Model;
 using NewLife.Serialization;
 
 namespace NewLife.Caching;
@@ -36,11 +37,20 @@ public class FullRedis : Redis
     #endregion
 
     #region 属性
+    /// <summary>键前缀</summary>
+    public String? Prefix { get; set; }
+
+    /// <summary>自动检测集群节点。默认false</summary>
+    /// <remarks>
+    /// 公有云Redis一般放在代理背后，主从架构，如果开启自动检测，将会自动识别主从，导致得到无法连接的内网主从库地址。
+    /// </remarks>
+    public Boolean AutoDetect { get; set; }
+
     /// <summary>模式</summary>
-    public String Mode { get; private set; }
+    public String? Mode { get; private set; }
 
     /// <summary>集群。包括集群、主从复制、哨兵，一旦存在则从Cluster获取节点进行连接，而不是当前实例的Pool池</summary>
-    public IRedisCluster Cluster { get; set; }
+    public IRedisCluster? Cluster { get; set; }
     #endregion
 
     #region 构造
@@ -57,23 +67,28 @@ public class FullRedis : Redis
     /// <param name="options"></param>
     public FullRedis(RedisOptions options)
     {
-        Name = options.InstanceName;
+        if (!options.InstanceName.IsNullOrEmpty())
+            Name = options.InstanceName;
+
+        Server = options.Server;
+        Password = options.Password;
+        Db = options.Db;
+        if (options.Timeout > 0)
+            Timeout = options.Timeout;
+        Prefix = options.Prefix;
 
         if (!options.Configuration.IsNullOrEmpty())
             Init(options.Configuration);
-        else
-        {
-            Server = options.Server;
-            Password = options.Password;
-            Db = options.Db;
-            Timeout = options.Timeout;
-        }
     }
 
     /// <summary>按照配置服务实例化Redis，用于NETCore依赖注入</summary>
     /// <param name="provider">服务提供者，将要解析IConfigProvider</param>
     /// <param name="name">缓存名称，也是配置中心key</param>
     public FullRedis(IServiceProvider provider, String name) : base(provider, name) { }
+    /// <summary>按照配置服务实例化Redis，用于NETCore依赖注入</summary>
+    /// <param name="provider">服务提供者，将要解析IConfigProvider</param>
+    /// <param name="options">Redis链接配置</param>
+    public FullRedis(IServiceProvider provider, RedisOptions options) : this(options) => Tracer = provider.GetService<ITracer>();
 
     /// <summary>销毁</summary>
     /// <param name="disposing"></param>
@@ -84,7 +99,7 @@ public class FullRedis : Redis
         Cluster.TryDispose();
     }
 
-    private String _configOld;
+    private String? _configOld;
     /// <summary>初始化配置</summary>
     /// <param name="config"></param>
     public override void Init(String config)
@@ -104,14 +119,13 @@ public class FullRedis : Redis
 
         if (config.IsNullOrEmpty()) return;
 
-        var dic =
-            config.Contains(',') && !config.Contains(';') ?
-            config.SplitAsDictionary("=", ",", true) :
-            config.SplitAsDictionary("=", ";", true);
+        var dic = ParseConfig(config);
         if (dic.Count > 0)
         {
-            if (dic.TryGetValue("ThrowOnFailure", out var str))
-                ThrowOnFailure = str.ToBoolean();
+            if (dic.TryGetValue("Prefix", out var str))
+                Prefix = str;
+            if (dic.TryGetValue("AutoDetect", out str))
+                AutoDetect = str.ToBoolean();
         }
 
         _configOld = config;
@@ -120,7 +134,8 @@ public class FullRedis : Redis
 
     #region 方法
     private Boolean _initCluster;
-    private void InitCluster()
+    /// <summary>初始化集群</summary>
+    public void InitCluster()
     {
         if (_initCluster) return;
         lock (this)
@@ -136,24 +151,49 @@ public class FullRedis : Redis
                 info.TryGetValue("role", out var role);
                 info.TryGetValue("connected_slaves", out var connected_slaves);
 
-                // 集群模式初始化节点
-                if (mode == "cluster")
+                if (!AutoDetect)
                 {
-                    var cluster = new RedisCluster(this);
-                    cluster.StartMonitor();
-                    Cluster = cluster;
+                    Cluster = null;
                 }
-                else if (mode.EqualIgnoreCase("sentinel"))
+                else
                 {
-                    var cluster = new RedisSentinel(this) { SetHostServer = true };
-                    cluster.StartMonitor();
-                    Cluster = cluster;
-                }
-                else if (mode.EqualIgnoreCase("standalone") && (connected_slaves.ToInt() > 0 || role == "slave"))
-                {
-                    var cluster = new RedisReplication(this) { SetHostServer = true };
-                    cluster.StartMonitor();
-                    Cluster = cluster;
+                    WriteLog("Init[{0}]：mode={1}, role={2}", Name, mode, role);
+
+                    // 集群模式初始化节点
+                    if (mode == "cluster")
+                    {
+                        var cluster = new RedisCluster(this);
+                        cluster.StartMonitor();
+                        Cluster = cluster;
+                    }
+                    else if (mode.EqualIgnoreCase("sentinel"))
+                    {
+                        var cluster = new RedisSentinel(this) { SetHostServer = true };
+                        cluster.StartMonitor();
+                        Cluster = cluster;
+                    }
+                    else if (mode.EqualIgnoreCase("standalone") && (connected_slaves.ToInt() > 0 || role == "slave"))
+                    {
+                        var cluster = new RedisReplication(this) { SetHostServer = true };
+                        cluster.StartMonitor();
+                        Cluster = cluster;
+                    }
+                    // 特别支持kvrocks（底层RockDB）
+                    else if (mode.IsNullOrEmpty() && role.EqualIgnoreCase("master", "slave"))
+                    {
+                        try
+                        {
+                            var cluster = new RedisCluster(this);
+                            cluster.StartMonitor();
+                            Cluster = cluster;
+                        }
+                        catch
+                        {
+                            var cluster = new RedisReplication(this) { SetHostServer = true };
+                            cluster.StartMonitor();
+                            Cluster = cluster;
+                        }
+                    }
                 }
             }
 
@@ -171,19 +211,26 @@ public class FullRedis : Redis
         {
             WriteLog("使用Redis节点：{0}", k);
 
-            return CreatePool(() => new RedisClient(this, k) { Name = k.Replace(':', '-') });
+            return CreatePool(() => new RedisClient(this, k) { Name = k.Replace(':', '-'), Log = ClientLog });
         });
     }
 
+    /// <summary>获取经前缀处理后的键名</summary>
+    /// <param name="key"></param>
+    /// <returns></returns>
+    public String GetKey(String key) => !Prefix.IsNullOrEmpty() ? key.EnsureStart(Prefix) : key;
+
     /// <summary>重载执行，支持集群</summary>
     /// <typeparam name="T"></typeparam>
-    /// <param name="key"></param>
-    /// <param name="func"></param>
+    /// <param name="key">用于选择集群节点的key</param>
+    /// <param name="func">命令函数</param>
     /// <param name="write">是否写入操作</param>
     /// <returns></returns>
-    public override T Execute<T>(String key, Func<RedisClient, T> func, Boolean write = false)
+    public override T Execute<T>(String key, Func<RedisClient, String, T> func, Boolean write = false)
     {
         InitCluster();
+
+        key = GetKey(key);
 
         // 如果不支持集群，直接返回
         if (Cluster == null) return base.Execute(key, func, write);
@@ -192,10 +239,25 @@ public class FullRedis : Redis
         //?? throw new XException($"集群[{Name}]没有可用节点");
         if (node == null) return base.Execute(key, func, write);
 
+        return ExecuteOnNode(key, func, write, Cluster, node);
+    }
+
+    /// <summary>在指定集群节点上执行命令</summary>
+    /// <typeparam name="T"></typeparam>
+    /// <typeparam name="TKey"></typeparam>
+    /// <param name="key">用于选择集群节点的key</param>
+    /// <param name="func">命令函数</param>
+    /// <param name="write">是否写入操作</param>
+    /// <param name="cluster">集群</param>
+    /// <param name="node">选中的节点</param>
+    /// <returns></returns>
+    public virtual T ExecuteOnNode<T, TKey>(TKey key, Func<RedisClient, TKey, T> func, Boolean write, IRedisCluster cluster, IRedisNode node)
+    {
         // 统计性能
         var sw = Counter?.StartCount();
 
         var i = 0;
+        var delay = 500;
         do
         {
             var pool = GetPool(node);
@@ -205,31 +267,115 @@ public class FullRedis : Redis
             try
             {
                 client.Reset();
-                var rs = func(client);
+                var rs = func(client, key);
 
-                Counter?.StopCount(sw);
-
-                Cluster.ResetNode(node);
+                cluster.ResetNode(node);
 
                 return rs;
             }
-            catch (InvalidDataException)
-            {
-                if (i++ >= Retry) throw;
-            }
+            //catch (RedisException) { throw; }
             catch (Exception ex)
             {
-                if (i++ >= Retry) throw;
+                if (++i >= Retry) throw;
+
+                // 销毁连接
+                client.TryDispose();
 
                 // 使用新的节点
-                node = Cluster.ReselectNode(key, write, node, ex);
-                if (node == null) throw;
+                var k = key is IList<String> ks ? ks[0] : key + "";
+                var node2 = cluster.ReselectNode(k, write, node, ex);
+                if (node2 != null)
+                    node = node2;
+                else
+                    Thread.Sleep(delay *= 2);
             }
             finally
             {
                 pool.Put(client);
+
+                Counter?.StopCount(sw);
             }
         } while (true);
+    }
+
+    /// <summary>在指定集群节点上执行命令</summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="keys">用于选择集群节点的key</param>
+    /// <param name="func">命令函数</param>
+    /// <param name="write">是否写入操作</param>
+    /// <returns></returns>
+    public virtual T[] Execute<T>(String[] keys, Func<RedisClient, String[], T> func, Boolean write)
+    {
+        if (keys == null || keys.Length == 0) return [];
+
+        InitCluster();
+
+        keys = keys.Select(GetKey).ToArray();
+
+        // 如果不支持集群，或者只有一个key，直接执行
+        if (Cluster == null || keys.Length == 1) return [Execute(keys.FirstOrDefault(), (rds, k) => func(rds, keys), write)];
+
+        // 计算每个key所在的节点
+        var dic = new Dictionary<String, List<String>>();
+        var nodes = new Dictionary<String, IRedisNode>();
+        foreach (var key in keys)
+        {
+            var node = Cluster.SelectNode(key, true);
+            if (node != null)
+            {
+                var k = node.EndPoint;
+                if (!dic.TryGetValue(k, out var list))
+                {
+                    dic[k] = list = [];
+                    nodes[k] = node;
+                }
+
+                if (!list.Contains(key)) list.Add(key);
+            }
+        }
+
+        // 分组批量执行
+        var rs = new List<T>();
+        foreach (var item in dic)
+        {
+            if (nodes.TryGetValue(item.Key, out var node))
+            {
+                rs.Add(ExecuteOnNode([.. item.Value], func, write, Cluster, node));
+            }
+        }
+
+        return [.. rs];
+    }
+
+    /// <summary>直接执行命令，不考虑集群读写</summary>
+    /// <typeparam name="TResult">返回类型</typeparam>
+    /// <param name="func">回调函数</param>
+    /// <param name="node">回调函数</param>
+    /// <returns></returns>
+    public virtual TResult Execute<TResult>(Func<RedisClient, TResult> func, IRedisNode? node)
+    {
+        // 每次重试都需要重新从池里借出连接
+        var pool = node != null ? GetPool(node) : Pool;
+        var client = pool.Get();
+        try
+        {
+            client.Reset();
+            return func(client);
+        }
+        catch (Exception ex)
+        {
+            if (ex is SocketException or IOException)
+            {
+                // 销毁连接
+                client.TryDispose();
+            }
+
+            throw;
+        }
+        finally
+        {
+            pool.Put(client);
+        }
     }
 
     /// <summary>重载执行，支持集群</summary>
@@ -238,9 +384,11 @@ public class FullRedis : Redis
     /// <param name="func"></param>
     /// <param name="write">是否写入操作</param>
     /// <returns></returns>
-    public override async Task<T> ExecuteAsync<T>(String key, Func<RedisClient, Task<T>> func, Boolean write = false)
+    public override async Task<T> ExecuteAsync<T>(String key, Func<RedisClient, String, Task<T>> func, Boolean write = false)
     {
         InitCluster();
+
+        key = GetKey(key);
 
         // 如果不支持集群，直接返回
         if (Cluster == null) return await base.ExecuteAsync<T>(key, func, write);
@@ -253,6 +401,7 @@ public class FullRedis : Redis
         var sw = Counter?.StartCount();
 
         var i = 0;
+        var delay = 500;
         do
         {
             var pool = GetPool(node);
@@ -262,33 +411,148 @@ public class FullRedis : Redis
             try
             {
                 client.Reset();
-                var rs = await func(client);
-
-                Counter?.StopCount(sw);
+                var rs = await func(client, key);
 
                 return rs;
             }
-            catch (InvalidDataException)
-            {
-                if (i++ >= Retry) throw;
-            }
+            //catch (RedisException) { throw; }
             catch (Exception ex)
             {
-                if (i++ >= Retry) throw;
+                if (++i >= Retry) throw;
+
+                // 销毁连接
+                client.TryDispose();
 
                 // 使用新的节点
-                node = Cluster.ReselectNode(key, write, node, ex);
-                if (node == null) throw;
+                var node2 = Cluster.ReselectNode(key, write, node, ex);
+                if (node2 != null)
+                    node = node2;
+                else
+                    Thread.Sleep(delay *= 2);
             }
             finally
             {
                 pool.Put(client);
+
+                Counter?.StopCount(sw);
             }
         } while (true);
     }
     #endregion
 
+    #region 子库
+    /// <summary>为同一服务器创建不同Db的子级库</summary>
+    /// <param name="db"></param>
+    /// <returns></returns>
+    public override Redis CreateSub(Int32 db)
+    {
+        var rds = (base.CreateSub(db) as FullRedis)!;
+        rds.AutoDetect = AutoDetect;
+        rds.Prefix = Prefix;
+
+        return rds;
+    }
+    #endregion
+
+    #region 基础操作
+    /// <summary>批量移除缓存项</summary>
+    /// <param name="keys">键集合</param>
+    public override Int32 Remove(params String[] keys)
+    {
+        if (keys == null || keys.Length == 0) return 0;
+
+        keys = keys.Select(GetKey).ToArray();
+        if (keys.Length == 1) return base.Remove(keys[0]);
+
+        InitCluster();
+
+        if (Cluster != null)
+        {
+            return Execute(keys, (rds, ks) => rds.Execute<Int32>("DEL", ks), true).Sum();
+        }
+        else
+        {
+            return Execute(keys.FirstOrDefault(), (rds, k) => rds.Execute<Int32>("DEL", keys), true);
+        }
+    }
+    #endregion
+
     #region 集合操作
+    /// <summary>批量获取缓存项</summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="keys"></param>
+    /// <returns></returns>
+    public override IDictionary<String, T> GetAll<T>(IEnumerable<String> keys)
+    {
+        if (keys == null || !keys.Any()) return new Dictionary<String, T>();
+
+        var keys2 = keys.ToArray();
+
+        keys2 = keys2.Select(GetKey).ToArray();
+        if (keys2.Length == 1 || Cluster == null) return base.GetAll<T>(keys2);
+
+        //Execute(keys.FirstOrDefault(), (rds, k) => rds.GetAll<T>(keys));
+        var rs = Execute(keys2, (rds, ks) => rds.GetAll<T>(ks), false);
+
+        var dic = new Dictionary<String, T?>();
+        foreach (var item in rs)
+        {
+            if (item != null && item.Count > 0)
+            {
+                foreach (var kv in item)
+                {
+                    dic[kv.Key] = kv.Value;
+                }
+            }
+        }
+
+        return dic;
+    }
+
+    /// <summary>批量设置缓存项</summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="values"></param>
+    /// <param name="expire">过期时间，秒。小于0时采用默认缓存时间<seealso cref="Cache.Expire"/></param>
+    public override void SetAll<T>(IDictionary<String, T> values, Int32 expire = -1)
+    {
+        if (values == null || values.Count == 0) return;
+
+        if (expire < 0) expire = Expire;
+
+        // 优化少量读取
+        if (values.Count <= 2)
+        {
+            foreach (var item in values)
+            {
+                Set(item.Key, item.Value, expire);
+            }
+            return;
+        }
+
+        var keys = values.Keys.Select(GetKey).ToArray();
+        //Execute(values.FirstOrDefault().Key, (rds, k) => rds.SetAll(values), true);
+        var rs = Execute(keys, (rds, ks) => rds.SetAll(ks.ToDictionary(e => e, e => values[e])), true);
+
+        // 使用管道批量设置过期时间
+        if (expire > 0)
+        {
+            var ts = TimeSpan.FromSeconds(expire);
+
+            StartPipeline();
+            try
+            {
+                foreach (var item in keys)
+                {
+                    SetExpire(item, ts);
+                }
+            }
+            finally
+            {
+                StopPipeline(true);
+            }
+        }
+    }
+
     /// <summary>获取列表</summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="key"></param>
@@ -311,13 +575,13 @@ public class FullRedis : Redis
     /// <typeparam name="T"></typeparam>
     /// <param name="topic">消息队列主题</param>
     /// <returns></returns>
-    public RedisReliableQueue<T> GetReliableQueue<T>(String topic) => new(this, topic);
+    public virtual RedisReliableQueue<T> GetReliableQueue<T>(String topic) => new(this, topic);
 
     /// <summary>获取延迟队列</summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="topic">消息队列主题</param>
     /// <returns></returns>
-    public RedisDelayQueue<T> GetDelayQueue<T>(String topic) => new(this, topic);
+    public virtual RedisDelayQueue<T> GetDelayQueue<T>(String topic) => new(this, topic);
 
     /// <summary>获取栈</summary>
     /// <typeparam name="T"></typeparam>
@@ -335,13 +599,13 @@ public class FullRedis : Redis
     /// <typeparam name="T"></typeparam>
     /// <param name="topic">消息队列主题</param>
     /// <returns></returns>
-    public RedisStream<T> GetStream<T>(String topic) => new(this, topic);
+    public virtual RedisStream<T> GetStream<T>(String topic) => new(this, topic);
 
     /// <summary>获取有序集合</summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="key"></param>
     /// <returns></returns>
-    public RedisSortedSet<T> GetSortedSet<T>(String key) => new(this, key);
+    public virtual RedisSortedSet<T> GetSortedSet<T>(String key) => new(this, key);
     #endregion
 
     #region 字符串操作
@@ -349,26 +613,26 @@ public class FullRedis : Redis
     /// <param name="key"></param>
     /// <param name="value"></param>
     /// <returns>返回字符串长度</returns>
-    public virtual Int32 Append(String key, String value) => Execute(key, r => r.Execute<Int32>("APPEND", key, value), true);
+    public virtual Int32 Append(String key, String value) => Execute(key, (r, k) => r.Execute<Int32>("APPEND", k, value), true);
 
     /// <summary>获取字符串区间</summary>
     /// <param name="key"></param>
     /// <param name="start"></param>
     /// <param name="end"></param>
     /// <returns></returns>
-    public virtual String GetRange(String key, Int32 start, Int32 end) => Execute(key, r => r.Execute<String>("GETRANGE", key, start, end));
+    public virtual String? GetRange(String key, Int32 start, Int32 end) => Execute(key, (r, k) => r.Execute<String>("GETRANGE", k, start, end));
 
     /// <summary>设置字符串区间</summary>
     /// <param name="key"></param>
     /// <param name="offset"></param>
     /// <param name="value"></param>
     /// <returns></returns>
-    public virtual String SetRange(String key, Int32 offset, String value) => Execute(key, r => r.Execute<String>("SETRANGE", key, offset, value), true);
+    public virtual String? SetRange(String key, Int32 offset, String value) => Execute(key, (r, k) => r.Execute<String>("SETRANGE", k, offset, value), true);
 
     /// <summary>字符串长度</summary>
     /// <param name="key"></param>
     /// <returns></returns>
-    public virtual Int32 StrLen(String key) => Execute(key, r => r.Execute<Int32>("STRLEN", key));
+    public virtual Int32 StrLen(String key) => Execute(key, (r, k) => r.Execute<Int32>("STRLEN", k));
     #endregion
 
     #region 高级操作
@@ -380,8 +644,9 @@ public class FullRedis : Redis
     public virtual Boolean Rename(String key, String newKey, Boolean overwrite = true)
     {
         var cmd = overwrite ? "RENAME" : "RENAMENX";
+        newKey = GetKey(newKey);
 
-        var rs = Execute(key, r => r.Execute<String>(cmd, key, newKey), true);
+        var rs = Execute(key, (r, k) => r.Execute<String>(cmd, k, newKey), true);
         if (rs.IsNullOrEmpty()) return false;
 
         return rs == "OK" || rs.ToInt() > 0;
@@ -397,22 +662,34 @@ public class FullRedis : Redis
     /// <returns></returns>
     public virtual IEnumerable<String> Search(SearchModel model)
     {
-        var count = model.Count;
-        while (count > 0)
+        InitCluster();
+
+        if (Cluster != null)
+            return Cluster.Nodes.SelectMany(x => Scan(x));
+        else
+            return Scan();
+
+        IEnumerable<String> Scan(IRedisNode? node = null)
         {
-            var p = model.Position;
-            var rs = Execute(r => r.Execute<Object[]>("SCAN", p, "MATCH", model.Pattern + "", "COUNT", count));
-            if (rs == null || rs.Length != 2) break;
-
-            model.Position = (rs[0] as Packet).ToStr().ToInt();
-
-            var ps = rs[1] as Object[];
-            foreach (Packet item in ps)
+            var count = model.Count;
+            while (count > 0)
             {
-                if (count-- > 0) yield return item.ToStr();
-            }
+                var p = model.Position;
+                var rs = Execute(r => r.Execute<Object[]>("SCAN", p, "MATCH", GetKey(model.Pattern + ""), "COUNT", count), node);
+                if (rs == null || rs.Length != 2) break;
 
-            if (model.Position == 0) break;
+                model.Position = (rs[0] as Packet)?.ToStr().ToInt() ?? 0;
+
+                if (rs[1] is Object[] ps)
+                {
+                    foreach (Packet item in ps)
+                    {
+                        if (count-- > 0) yield return item.ToStr();
+                    }
+                }
+
+                if (model.Position == 0) break;
+            }
         }
     }
 
@@ -427,7 +704,7 @@ public class FullRedis : Redis
     /// <summary>获取指定键的数据结构类型，如stream</summary>
     /// <param name="key"></param>
     /// <returns></returns>
-    public virtual String TYPE(String key) => Execute(key, rc => rc.Execute<String>("TYPE", key), false);
+    public virtual String? TYPE(String key) => Execute(key, (rc, k) => rc.Execute<String>("TYPE", k), false);
 
     /// <summary>向列表末尾插入</summary>
     /// <typeparam name="T"></typeparam>
@@ -436,15 +713,17 @@ public class FullRedis : Redis
     /// <returns></returns>
     public virtual Int32 RPUSH<T>(String key, params T[] values)
     {
+        // 这里提前打包参数，需要处理key前缀。其它普通情况由Execute处理
+        key = GetKey(key);
         var args = new List<Object>
         {
             key
         };
         foreach (var item in values)
         {
-            args.Add(item);
+            if (item != null) args.Add(item);
         }
-        return Execute(key, rc => rc.Execute<Int32>("RPUSH", args.ToArray()), true);
+        return Execute(key, (rc, k) => rc.Execute<Int32>("RPUSH", args.ToArray()), true);
     }
 
     /// <summary>向列表头部插入</summary>
@@ -454,22 +733,24 @@ public class FullRedis : Redis
     /// <returns></returns>
     public virtual Int32 LPUSH<T>(String key, params T[] values)
     {
+        // 这里提前打包参数，需要处理key前缀。其它普通情况由Execute处理
+        key = GetKey(key);
         var args = new List<Object>
         {
             key
         };
         foreach (var item in values)
         {
-            args.Add(item);
+            if (item != null) args.Add(item);
         }
-        return Execute(key, rc => rc.Execute<Int32>("LPUSH", args.ToArray()), true);
+        return Execute(key, (rc, k) => rc.Execute<Int32>("LPUSH", args.ToArray()), true);
     }
 
     /// <summary>从列表末尾弹出一个元素</summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="key"></param>
     /// <returns></returns>
-    public virtual T RPOP<T>(String key) => Execute(key, rc => rc.Execute<T>("RPOP", key), true);
+    public virtual T? RPOP<T>(String key) => Execute(key, (rc, k) => rc.Execute<T>("RPOP", k), true);
 
     /// <summary>从列表末尾弹出一个元素并插入到另一个列表头部</summary>
     /// <remarks>适用于做安全队列</remarks>
@@ -477,7 +758,7 @@ public class FullRedis : Redis
     /// <param name="source">源列表名称</param>
     /// <param name="destination">元素后写入的新列表名称</param>
     /// <returns></returns>
-    public virtual T RPOPLPUSH<T>(String source, String destination) => Execute(source, rc => rc.Execute<T>("RPOPLPUSH", source, destination), true);
+    public virtual T? RPOPLPUSH<T>(String source, String destination) => Execute(source, (rc, k) => rc.Execute<T>("RPOPLPUSH", k, GetKey(destination)), true);
 
     /// <summary>
     /// 从列表中弹出一个值，将弹出的元素插入到另外一个列表中并返回它； 如果列表没有元素会阻塞列表直到等待超时或发现可弹出元素为止。
@@ -488,13 +769,13 @@ public class FullRedis : Redis
     /// <param name="destination">元素后写入的新列表名称</param>
     /// <param name="secTimeout">设置的阻塞时长，单位为秒。设置前请确认该值不能超过FullRedis.Timeout 否则会出现异常</param>
     /// <returns></returns>
-    public virtual T BRPOPLPUSH<T>(String source, String destination, Int32 secTimeout) => Execute(source, rc => rc.Execute<T>("BRPOPLPUSH", source, destination, secTimeout), true);
+    public virtual T? BRPOPLPUSH<T>(String source, String destination, Int32 secTimeout) => Execute(source, (rc, k) => rc.Execute<T>("BRPOPLPUSH", k, GetKey(destination), secTimeout), true);
 
     /// <summary>从列表头部弹出一个元素</summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="key"></param>
     /// <returns></returns>
-    public virtual T LPOP<T>(String key) => Execute(key, rc => rc.Execute<T>("LPOP", key), true);
+    public virtual T? LPOP<T>(String key) => Execute(key, (rc, k) => rc.Execute<T>("LPOP", k), true);
 
     /// <summary>从列表末尾弹出一个元素，阻塞</summary>
     /// <remarks>
@@ -505,19 +786,23 @@ public class FullRedis : Redis
     /// <param name="keys"></param>
     /// <param name="secTimeout"></param>
     /// <returns></returns>
-    public virtual Tuple<String, T> BRPOP<T>(String[] keys, Int32 secTimeout = 0)
+    public virtual Tuple<String, T?>? BRPOP<T>(String[] keys, Int32 secTimeout = 0)
     {
         var sb = new StringBuilder();
         foreach (var item in keys)
         {
+            var key = GetKey(item);
             if (sb.Length <= 0)
-                sb.Append($"{item}");
+                sb.Append($"{key}");
             else
-                sb.Append($" {item}");
+                sb.Append($" {key}");
         }
-        var rs = Execute(keys[0], rc => rc.Execute<String[]>("BRPOP", sb.ToString(), secTimeout), true);
+        var rs = Execute(keys[0], (rc, k) => rc.Execute<String[]>("BRPOP", sb.ToString(), secTimeout), true);
         if (rs == null || rs.Length != 2) return null;
-        return new Tuple<String, T>(rs[0], rs[1].ToJsonEntity<T>());
+
+        if (typeof(T) == typeof(String)) return new Tuple<String, T?>(rs[0], (T)(Object)rs[1]);
+
+        return new Tuple<String, T?>(rs[0], rs[1].ToJsonEntity<T>());
     }
 
     /// <summary>从列表末尾弹出一个元素，阻塞</summary>
@@ -525,7 +810,7 @@ public class FullRedis : Redis
     /// <param name="key"></param>
     /// <param name="secTimeout"></param>
     /// <returns></returns>
-    public virtual T BRPOP<T>(String key, Int32 secTimeout = 0)
+    public virtual T? BRPOP<T>(String key, Int32 secTimeout = 0)
     {
         var rs = BRPOP<T>(new[] { key }, secTimeout);
         return rs == null ? default : rs.Item2;
@@ -540,19 +825,23 @@ public class FullRedis : Redis
     /// <param name="keys"></param>
     /// <param name="secTimeout"></param>
     /// <returns></returns>
-    public virtual Tuple<String, T> BLPOP<T>(String[] keys, Int32 secTimeout = 0)
+    public virtual Tuple<String, T?>? BLPOP<T>(String[] keys, Int32 secTimeout = 0)
     {
         var sb = new StringBuilder();
         foreach (var item in keys)
         {
+            var key = GetKey(item);
             if (sb.Length <= 0)
-                sb.Append($"{item}");
+                sb.Append($"{key}");
             else
-                sb.Append($" {item}");
+                sb.Append($" {key}");
         }
-        var rs = Execute(keys[0], rc => rc.Execute<String[]>("BLPOP", sb.ToString(), secTimeout), true);
+        var rs = Execute(keys[0], (rc, k) => rc.Execute<String[]>("BLPOP", sb.ToString(), secTimeout), true);
         if (rs == null || rs.Length != 2) return null;
-        return new Tuple<String, T>(rs[0], rs[1].ToJsonEntity<T>()); //.ChangeType<T>());
+
+        if (typeof(T) == typeof(String)) return new Tuple<String, T?>(rs[0], (T)(Object)rs[1]);
+
+        return new Tuple<String, T?>(rs[0], rs[1].ToJsonEntity<T>());
     }
 
     /// <summary>从列表头部弹出一个元素，阻塞</summary>
@@ -560,7 +849,7 @@ public class FullRedis : Redis
     /// <param name="key"></param>
     /// <param name="secTimeout"></param>
     /// <returns></returns>
-    public virtual T BLPOP<T>(String key, Int32 secTimeout = 0)
+    public virtual T? BLPOP<T>(String key, Int32 secTimeout = 0)
     {
         var rs = BLPOP<T>(new[] { key }, secTimeout);
         return rs == null ? default : rs.Item2;
@@ -573,15 +862,16 @@ public class FullRedis : Redis
     /// <returns></returns>
     public virtual Int32 SADD<T>(String key, params T[] members)
     {
+        key = GetKey(key);
         var args = new List<Object>
         {
             key
         };
         foreach (var item in members)
         {
-            args.Add(item);
+            if (item != null) args.Add(item);
         }
-        return Execute(key, rc => rc.Execute<Int32>("SADD", args.ToArray()), true);
+        return Execute(key, (rc, k) => rc.Execute<Int32>("SADD", args.ToArray()), true);
     }
 
     /// <summary>向集合删除多个元素</summary>
@@ -591,50 +881,51 @@ public class FullRedis : Redis
     /// <returns></returns>
     public virtual Int32 SREM<T>(String key, params T[] members)
     {
+        key = GetKey(key);
         var args = new List<Object>
         {
             key
         };
         foreach (var item in members)
         {
-            args.Add(item);
+            if (item != null) args.Add(item);
         }
-        return Execute(key, rc => rc.Execute<Int32>("SREM", args.ToArray()), true);
+        return Execute(key, (rc, k) => rc.Execute<Int32>("SREM", args.ToArray()), true);
     }
 
     /// <summary>获取所有元素</summary>
     /// <param name="key"></param>
     /// <returns></returns>
-    public virtual T[] SMEMBERS<T>(String key) => Execute(key, r => r.Execute<T[]>("SMEMBERS", key));
+    public virtual T[]? SMEMBERS<T>(String key) => Execute(key, (r, k) => r.Execute<T[]>("SMEMBERS", k));
 
     /// <summary>返回集合元素个数</summary>
     /// <param name="key"></param>
     /// <returns></returns>
-    public virtual Int32 SCARD(String key) => Execute(key, rc => rc.Execute<Int32>("SCARD", key));
+    public virtual Int32 SCARD(String key) => Execute(key, (rc, k) => rc.Execute<Int32>("SCARD", k));
 
     /// <summary>成员 member 是否是存储的集合 key的成员</summary>
     /// <param name="key"></param>
     /// <param name="member"></param>
     /// <returns></returns>
-    public virtual Int32 SISMEMBER<T>(String key, T member) => Execute(key, rc => rc.Execute<Int32>("SISMEMBER", key, member));
+    public virtual Int32 SISMEMBER<T>(String key, T member) => Execute(key, (rc, k) => rc.Execute<Int32>("SISMEMBER", k, member));
 
     /// <summary>将member从source集合移动到destination集合中</summary>
     /// <param name="key"></param>
     /// <param name="dest"></param>
     /// <param name="member"></param>
     /// <returns></returns>
-    public virtual T[] SMOVE<T>(String key, String dest, T member) => Execute(key, r => r.Execute<T[]>("SMOVE", key, dest, member), true);
+    public virtual T[]? SMOVE<T>(String key, String dest, T member) => Execute(key, (r, k) => r.Execute<T[]>("SMOVE", k, dest, member), true);
 
     /// <summary>随机获取多个</summary>
     /// <param name="key"></param>
     /// <param name="count"></param>
     /// <returns></returns>
-    public virtual T[] SRANDMEMBER<T>(String key, Int32 count) => Execute(key, r => r.Execute<T[]>("SRANDMEMBER", key, count));
+    public virtual T[]? SRANDMEMBER<T>(String key, Int32 count) => Execute(key, (r, k) => r.Execute<T[]>("SRANDMEMBER", k, count));
 
     /// <summary>随机获取并弹出</summary>
     /// <param name="key"></param>
     /// <param name="count"></param>
     /// <returns></returns>
-    public virtual T[] SPOP<T>(String key, Int32 count) => Execute(key, r => r.Execute<T[]>("SPOP", key, count), true);
+    public virtual T[]? SPOP<T>(String key, Int32 count) => Execute(key, (r, k) => r.Execute<T[]>("SPOP", k, count), true);
     #endregion
 }

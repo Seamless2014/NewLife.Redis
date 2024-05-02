@@ -6,8 +6,8 @@
     <AssemblyTitle>新生命Redis客户端组件</AssemblyTitle>
     <Description>Redis基础操作、消息队列，经过日均100亿次调用量的项目验证。旧版NET45找2021年</Description>
     <Company>新生命开发团队</Company>
-    <Copyright>©2002-2023 新生命开发团队</Copyright>
-    <VersionPrefix>5.3</VersionPrefix>
+    <Copyright>©2002-2024 新生命开发团队</Copyright>
+    <VersionPrefix>5.6</VersionPrefix>
     <VersionSuffix>$([System.DateTime]::Now.ToString(`yyyy.MMdd`))</VersionSuffix>
     <Version>$(VersionPrefix).$(VersionSuffix)</Version>
     <FileVersion>$(Version)</FileVersion>
@@ -15,6 +15,7 @@
     <OutputPath>..\Bin</OutputPath>
     <GenerateDocumentationFile>True</GenerateDocumentationFile>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <SignAssembly>True</SignAssembly>
     <AssemblyOriginatorKeyFile>..\Doc\newlife.snk</AssemblyOriginatorKeyFile>
@@ -28,7 +29,7 @@
     <RepositoryUrl>https://github.com/NewLifeX/NewLife.Redis</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>新生命团队;X组件;NewLife;$(AssemblyName)</PackageTags>
-    <PackageReleaseNotes>支持集群、主从复制和哨兵的自动发现与切换</PackageReleaseNotes>
+    <PackageReleaseNotes>FullRedis支持前缀；AutoDetect默认关闭</PackageReleaseNotes>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
@@ -38,14 +39,14 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.1.1">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NewLife.Core" Version="10.2.2023.401" />
+    <PackageReference Include="NewLife.Core" Version="10.9.2024.402" />
   </ItemGroup>
 
   <ItemGroup>

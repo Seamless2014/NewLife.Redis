@@ -1,6 +1,4 @@
-﻿using System;
-using NewLife.Caching.Common;
-using NewLife.Log;
+﻿using NewLife.Log;
 using NewLife.Net;
 
 namespace NewLife.Caching.Queues;
@@ -44,10 +42,13 @@ public abstract class QueueBase : RedisBase
         if (_traceHost.IsNullOrEmpty() || _traceHost.EqualIgnoreCase("Redis", "FullRedis"))
         {
             var svr = redis.Server;
-            var p = svr.IndexOfAny(new[] { ',', ';' });
-            if (p > 0) svr = svr[..p];
-            var uri = new NetUri(svr);
-            _traceHost = uri.Host ?? uri.Address.ToString();
+            if (!svr.IsNullOrEmpty())
+            {
+                var p = svr.IndexOfAny([',', ';']);
+                if (p > 0) svr = svr[..p];
+                var uri = new NetUri(svr);
+                _traceHost = uri.Host ?? uri.Address.ToString();
+            }
         }
     }
     #endregion
@@ -55,9 +56,9 @@ public abstract class QueueBase : RedisBase
     #region 方法
     /// <summary>验证失败</summary>
     /// <param name="span"></param>
-    protected void ValidWhenSendFailed(ISpan span)
+    protected void ValidWhenSendFailed(ISpan? span)
     {
-        var ex = new RedisException($"发布到队列[{Topic}]失败！");
+        var ex = new InvalidOperationException($"发布到队列[{Topic}]失败！");
         span?.SetError(ex, null);
 
         if (ThrowOnFailure) throw ex;

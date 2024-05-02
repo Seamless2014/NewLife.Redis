@@ -1,6 +1,4 @@
-﻿using System;
-using System.Threading.Tasks;
-using NewLife.Data;
+﻿using NewLife.Data;
 using NewLife.Reflection;
 using NewLife.Serialization;
 
@@ -21,23 +19,32 @@ public abstract class RedisBase
     /// <summary>实例化</summary>
     /// <param name="redis"></param>
     /// <param name="key"></param>
-    public RedisBase(Redis redis, String key) { Redis = redis; Key = key; }
+    public RedisBase(Redis redis, String key)
+    {
+        Redis = redis;
+        Key = redis is FullRedis rds ? rds.GetKey(key) : key;
+    }
     #endregion
 
     #region 方法
+    /// <summary>获取经前缀处理后的键名</summary>
+    /// <param name="key"></param>
+    /// <returns></returns>
+    protected virtual String GetKey(String key) => Redis is FullRedis rds ? rds.GetKey(key) : key;
+
     /// <summary>执行命令</summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="func"></param>
     /// <param name="write">是否写入操作</param>
     /// <returns></returns>
-    public virtual T Execute<T>(Func<RedisClient, T> func, Boolean write = false) => Redis.Execute(Key, func, write);
+    public virtual T Execute<T>(Func<RedisClient, String, T> func, Boolean write = false) => Redis.Execute(Key, func, write);
 
     /// <summary>异步执行命令</summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="func"></param>
     /// <param name="write">是否写入操作</param>
     /// <returns></returns>
-    public virtual async Task<T> ExecuteAsync<T>(Func<RedisClient, Task<T>> func, Boolean write = false) => await Redis.ExecuteAsync(Key, func, write);
+    public virtual async Task<T> ExecuteAsync<T>(Func<RedisClient, String, Task<T>> func, Boolean write = false) => await Redis.ExecuteAsync(Key, func, write);
     #endregion
 
     #region 辅助
@@ -66,7 +73,7 @@ public abstract class RedisBase
     /// <param name="pk"></param>
     /// <param name="type"></param>
     /// <returns></returns>
-    protected virtual Object FromBytes(Packet pk, Type type)
+    protected virtual Object? FromBytes(Packet pk, Type type)
     {
         if (type == typeof(Packet)) return pk;
         if (type == typeof(Byte[])) return pk.ToArray();
@@ -83,6 +90,6 @@ public abstract class RedisBase
     /// <typeparam name="T"></typeparam>
     /// <param name="pk"></param>
     /// <returns></returns>
-    protected T FromBytes<T>(Packet pk) => (T)FromBytes(pk, typeof(T));
+    protected T? FromBytes<T>(Packet pk) => (T?)FromBytes(pk, typeof(T));
     #endregion
 }

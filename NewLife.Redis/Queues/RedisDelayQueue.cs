@@ -1,5 +1,4 @@
-﻿using NewLife.Caching.Common;
-using NewLife.Log;
+﻿using NewLife.Log;
 
 namespace NewLife.Caching.Queues;
 
@@ -29,7 +28,7 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
     /// <summary>实例化延迟队列</summary>
     /// <param name="redis"></param>
     /// <param name="key"></param>
-    public RedisDelayQueue(Redis redis, String key) : base(redis, key) => _sort = new RedisSortedSet<T>(redis, key);
+    public RedisDelayQueue(Redis redis, String key) : base(redis, key) => _sort = new RedisSortedSet<T>(redis, redis is FullRedis rds ? rds.GetKey(key) : key);
     #endregion
 
     #region 核心方法
@@ -50,7 +49,7 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
                 rs = _sort.Add(value, target);
                 if (rs >= 0) return rs;
 
-                span?.SetError(new RedisException($"发布到队列[{Topic}]失败！"), null);
+                span?.SetError(new InvalidOperationException($"发布到队列[{Topic}]失败！"), null);
 
                 if (i < RetryTimesWhenSendFailed) Thread.Sleep(RetryIntervalWhenSendFailed);
             }
@@ -83,7 +82,7 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
                 rs = _sort.Add(values, target);
                 if (rs > 0) return rs;
 
-                span?.SetError(new RedisException($"发布到队列[{Topic}]失败！"), null);
+                span?.SetError(new InvalidOperationException($"发布到队列[{Topic}]失败！"), null);
 
                 if (i < RetryTimesWhenSendFailed) Thread.Sleep(RetryIntervalWhenSendFailed);
             }
@@ -107,7 +106,7 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
     /// <summary>获取一个</summary>
     /// <param name="timeout">超时时间，默认0秒永远阻塞；负数表示直接返回，不阻塞。</param>
     /// <returns></returns>
-    public T TakeOne(Int32 timeout = 0)
+    public T? TakeOne(Int32 timeout = 0)
     {
         //RetryAck();
 
@@ -134,7 +133,7 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
     /// <param name="timeout">超时时间，默认0秒永远阻塞；负数表示直接返回，不阻塞。</param>
     /// <param name="cancellationToken">取消令牌</param>
     /// <returns></returns>
-    public async Task<T> TakeOneAsync(Int32 timeout = 0, CancellationToken cancellationToken = default)
+    public async Task<T?> TakeOneAsync(Int32 timeout = 0, CancellationToken cancellationToken = default)
     {
         //RetryAck();
 
@@ -160,7 +159,7 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
     /// <summary>异步消费获取</summary>
     /// <param name="timeout">超时时间，默认0秒永远阻塞；负数表示直接返回，不阻塞。</param>
     /// <returns></returns>
-    Task<T> IProducerConsumer<T>.TakeOneAsync(Int32 timeout) => TakeOneAsync(timeout, default);
+    Task<T?> IProducerConsumer<T>.TakeOneAsync(Int32 timeout) => TakeOneAsync(timeout, default);
 
     /// <summary>获取一批</summary>
     /// <param name="count"></param>
@@ -176,14 +175,17 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
         if (rs == null || rs.Length == 0) yield break;
 
         foreach (var item in rs)
+        {
             // 争夺消费
             if (TryPop(item)) yield return item;
+        }
     }
 
     /// <summary>争夺消费，只有一个线程能够成功删除，作为抢到的标志。同时备份到Ack队列</summary>
     /// <param name="value"></param>
     /// <returns></returns>
-    private Boolean TryPop(T value) =>
+    private Boolean TryPop(T value)
+    {
         //if (_ack != null)
         //{
         //    // 先备份，再删除。备份到Ack队列
@@ -192,7 +194,8 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
         //}
 
         // 删除作为抢夺
-        _sort.Remove(value) > 0;
+        return _sort.Remove(value) > 0;
+    }
 
     /// <summary>确认删除</summary>
     /// <param name="keys"></param>
@@ -211,7 +214,7 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
     /// <param name="onException">异常处理</param>
     /// <param name="cancellationToken">取消令牌</param>
     /// <returns></returns>
-    public async Task TransferAsync(IProducerConsumer<T> queue, Action<Exception> onException = null, CancellationToken cancellationToken = default)
+    public async Task TransferAsync(IProducerConsumer<T> queue, Action<Exception>? onException = null, CancellationToken cancellationToken = default)
     {
         // 大循环之前，打断性能追踪调用链
         DefaultSpan.Current = null;
@@ -223,7 +226,7 @@ public class RedisDelayQueue<T> : QueueBase, IProducerConsumer<T>
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            ISpan span = null;
+            ISpan? span = null;
             try
             {
                 // 异步阻塞消费

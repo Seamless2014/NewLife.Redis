@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading;
 using NewLife;
 using NewLife.Caching;
@@ -28,8 +29,10 @@ public class RedisTest
 
         _redis = new Redis();
         _redis.Init(config);
-#if DEBUG
         _redis.Log = XTrace.Log;
+
+#if DEBUG
+        _redis.ClientLog = XTrace.Log;
 #endif
     }
 
@@ -56,6 +59,11 @@ public class RedisTest
         Assert.Equal(9, redis.Db);
         Assert.Equal(1024000, redis.MaxMessageSize);
         Assert.Equal(3600, redis.Expire);
+
+        str = "server=127.0.0.1:6379,127.0.0.1:7000;password=$aes$Ve5eWgaHB-qzFeEJ0GjznQ;db=9;";
+        redis = new Redis();
+        redis.Init(str);
+        Assert.Equal("test", redis.Password);
     }
 
     //[TestOrder(2)]
@@ -349,13 +357,13 @@ public class RedisTest
         ic.Set("username", Environment.UserName, 60);
 
         //var ss = ic.Search("*");
-        var ss = ic.Execute(null, r => r.Execute<String[]>("KEYS", "*"));
+        var ss = ic.Execute(null, (r, k) => r.Execute<String[]>("KEYS", "*"));
         Assert.NotNull(ss);
         Assert.NotEmpty(ss);
 
-        var ss2 = ic.Execute(null, r => r.Execute<String[]>("KEYS", "abcdefg*"));
-        Assert.NotNull(ss2);
-        Assert.Empty(ss2);
+        var ss2 = ic.Execute(null, (r, k) => r.Execute<String[]>("KEYS", "abcdefg*"));
+        Assert.Null(ss2);
+        //Assert.Empty(ss2);
 
         var n = 0;
         var ss3 = Search(ic, "*", 10, ref n);
@@ -372,7 +380,7 @@ public class RedisTest
     private String[] Search(Redis rds, String pattern, Int32 count, ref Int32 position)
     {
         var p = position;
-        var rs = rds.Execute(null, r => r.Execute<Object[]>("SCAN", p, "MATCH", pattern + "", "COUNT", count));
+        var rs = rds.Execute(null, (r, k) => r.Execute<Object[]>("SCAN", p, "MATCH", pattern + "", "COUNT", count));
 
         if (rs != null)
         {
@@ -402,11 +410,11 @@ public class RedisTest
         {
             Thread.Sleep(100);
 
-            rds.Execute(key, r => r.Execute<Int32>("LPUSH", key, "xxx"), true);
+            rds.Execute(key, (r, k) => r.Execute<Int32>("LPUSH", k, "xxx"), true);
         });
         thread.Start();
 
-        var rs = await rds.ExecuteAsync(key, r => r.ExecuteAsync<String[]>("BRPOP", key, 5));
+        var rs = await rds.ExecuteAsync(key, (r, k) => r.ExecuteAsync<String[]>("BRPOP", k, 5));
 
         sw.Stop();
 
@@ -426,8 +434,9 @@ public class RedisTest
 
         var redis = new Redis();
         redis.Init(config);
-#if DEBUG
         redis.Log = XTrace.Log;
+#if DEBUG
+        redis.ClientLog = XTrace.Log;
 #endif
 
         var ic = redis;

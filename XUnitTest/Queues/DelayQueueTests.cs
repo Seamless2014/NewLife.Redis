@@ -24,8 +24,10 @@ public class DelayQueueTests
 
         _redis = new FullRedis();
         _redis.Init(config);
-#if DEBUG
         _redis.Log = XTrace.Log;
+
+#if DEBUG
+        _redis.ClientLog = XTrace.Log;
 #endif
     }
 
@@ -232,7 +234,7 @@ public class DelayQueueTests
     }
 
     [Fact]
-    public void Queue_Benchmark_Mutilate()
+    public async void Queue_Benchmark_Mutilate()
     {
         var key = "DelayQueue_benchmark_mutilate";
         _redis.Remove(key);
@@ -258,6 +260,7 @@ public class DelayQueueTests
         var count = 0;
         var ths = new List<Task>();
         for (var i = 0; i < 16; i++)
+        {
             ths.Add(Task.Run(() =>
             {
                 var queue2 = _redis.GetDelayQueue<String>(key);
@@ -273,8 +276,9 @@ public class DelayQueueTests
                     Interlocked.Add(ref count, list.Count);
                 }
             }));
+        }
 
-        Task.WaitAll(ths.ToArray());
+        await Task.WhenAll(ths.ToArray());
 
         Assert.Equal(1_000 * 20, count);
     }

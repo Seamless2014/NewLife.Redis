@@ -8,16 +8,22 @@ namespace NewLife.Caching.Clusters;
 public class RedisCluster : RedisBase, IRedisCluster, IDisposable
 {
     #region 属性
-    /// <summary>集群节点</summary>
-    public ClusterNode[] Nodes { get; private set; }
+    /// <summary>节点集合</summary>
+    IList<IRedisNode> IRedisCluster.Nodes => Nodes.Select(x => (IRedisNode)x).ToList();
 
-    private TimerX _timer;
+    /// <summary>节点改变事件</summary>
+    public event EventHandler NodeChanged;
+
+    /// <summary>集群节点</summary>
+    public ClusterNode[]? Nodes { get; private set; }
+
+    private TimerX? _timer;
     #endregion
 
     #region 构造
     /// <summary>实例化</summary>
     /// <param name="redis"></param>
-    public RedisCluster(Redis redis) : base(redis, null) { }
+    public RedisCluster(Redis redis) : base(redis, "") { }
 
     /// <summary>销毁</summary>
     public void Dispose() => _timer.TryDispose();
@@ -44,13 +50,13 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
         ParseNodes(rs);
     }
 
-    private String _lastNodes;
+    private String? _lastNodes;
     /// <summary>分析节点</summary>
     /// <param name="nodes"></param>
     public void ParseNodes(String nodes)
     {
         var showLog = Nodes == null;
-        if (showLog) WriteLog("分析[{0}]集群节点：", Redis?.Name);
+        if (showLog) WriteLog("分析[{0}]集群节点：", Redis.Name);
 
         var list = new List<ClusterNode>();
         foreach (var item in nodes.Split("\r", "\n"))
@@ -71,11 +77,13 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
             }
         }
 
+        var changed = false;
         var str = list.Join("\n", n => n + " " + n?.Slots.Join(","));
         if (str != _lastNodes)
         {
-            if (!showLog) WriteLog("分析[{0}]集群节点：", Redis?.Name);
+            if (!showLog) WriteLog("分析[{0}]集群节点：", Redis.Name);
             showLog = true;
+            changed = true;
             _lastNodes = str;
         }
 
@@ -95,6 +103,8 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
             }
         }
         Nodes = list.ToArray();
+
+        if (changed) NodeChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private List<ClusterNode> SortNodes(List<ClusterNode> list)
@@ -117,13 +127,21 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
     /// <param name="key">键</param>
     /// <param name="write">可写</param>
     /// <returns></returns>
-    public virtual IRedisNode SelectNode(String key, Boolean write)
+    public virtual IRedisNode? SelectNode(String key, Boolean write)
     {
         if (key.IsNullOrEmpty()) return null;
 
         // 选择有效节点，剔除被屏蔽节点和未连接节点
         var now = DateTime.Now;
         var ns = Nodes?.Where(e => e.LinkState == 1).ToArray();
+
+        // Redis支持{}来固定到某个特定节点
+        var p1 = key.IndexOf('{');
+        if (p1 >= 0)
+        {
+            var p2 = key.IndexOf('}', p1 + 1);
+            if (p2 > 0) key = key.Substring(p1 + 1, p2 - p1 - 1);
+        }
 
         var slot = key.GetBytes().Crc16() % 16384;
         ns = ns?.Where(e => e.Contain(slot)).ToArray();
@@ -167,7 +185,7 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
     /// <param name="node"></param>
     /// <param name="exception"></param>
     /// <returns></returns>
-    public IRedisNode ReselectNode(String key, Boolean write, IRedisNode node, Exception exception)
+    public IRedisNode? ReselectNode(String key, Boolean write, IRedisNode node, Exception exception)
     {
         using var span = Redis.Tracer?.NewSpan("redis:ReselectNode", new { key, (node as RedisNode)?.EndPoint });
 
@@ -192,7 +210,7 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
         if (exception is SocketException or IOException)
         {
             // 屏蔽旧节点一段时间
-            if (node is RedisNode redisNode && redisNode.Error++ > Redis.Retry)
+            if (node is RedisNode redisNode && ++redisNode.Error >= Redis.Retry)
             {
                 redisNode.NextTime = now.AddSeconds(Redis.ShieldingTime);
                 msg = $"屏蔽 {redisNode.EndPoint} 到 {redisNode.NextTime.ToFullString()}";
@@ -208,7 +226,7 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
     /// <param name="endpoint"></param>
     /// <param name="key"></param>
     /// <returns></returns>
-    public virtual ClusterNode Map(String endpoint, String key)
+    public virtual ClusterNode? Map(String endpoint, String key)
     {
         var node = Nodes.FirstOrDefault(e => e.EndPoint == endpoint);
         if (node == null) return null;
@@ -232,7 +250,7 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
     /// <summary>向集群添加新节点</summary>
     /// <param name="ip"></param>
     /// <param name="port"></param>
-    public virtual void Meet(String ip, Int32 port) => Execute(r => r.Execute("CLUSTER", "MEET", ip, port));
+    public virtual void Meet(String ip, Int32 port) => Execute((r, k) => r.Execute("CLUSTER", "MEET", ip, port));
 
     /// <summary>向节点增加槽</summary>
     /// <param name="node"></param>
@@ -240,7 +258,7 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
     /// <returns></returns>
     public virtual void AddSlots(ClusterNode node, params Int32[] slots)
     {
-        var pool = (Redis as FullRedis).GetPool(node);
+        var pool = (Redis as FullRedis)!.GetPool(node);
         var client = pool.Get();
         try
         {
@@ -265,7 +283,7 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
     /// <returns></returns>
     public virtual void DeleteSlots(ClusterNode node, params Int32[] slots)
     {
-        var pool = (Redis as FullRedis).GetPool(node);
+        var pool = (Redis as FullRedis)!.GetPool(node);
         var client = pool.Get();
         try
         {
@@ -358,6 +376,6 @@ public class RedisCluster : RedisBase, IRedisCluster, IDisposable
     /// <summary>写日志</summary>
     /// <param name="format"></param>
     /// <param name="args"></param>
-    public void WriteLog(String format, params Object[] args) => Log?.Info(format, args);
+    public void WriteLog(String format, params Object?[] args) => Log?.Info(format, args);
     #endregion
 }

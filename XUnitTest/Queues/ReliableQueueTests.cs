@@ -24,8 +24,10 @@ public class ReliableQueueTests
 
         _redis = new FullRedis();
         _redis.Init(config);
-#if DEBUG
         _redis.Log = XTrace.Log;
+
+#if DEBUG
+        _redis.ClientLog = XTrace.Log;
 #endif
     }
 
@@ -294,7 +296,7 @@ public class ReliableQueueTests
     }
 
     [Fact]
-    public void Queue_Benchmark_Mutilate()
+    public async void Queue_Benchmark_Mutilate()
     {
         var key = "ReliableQueue_benchmark_mutilate";
         _redis.Remove(key);
@@ -318,6 +320,7 @@ public class ReliableQueueTests
         //var count = 0;
         var ths = new List<Task<Int32>>();
         for (var i = 0; i < 16; i++)
+        {
             ths.Add(Task.Run(() =>
             {
                 var count = 0;
@@ -337,9 +340,10 @@ public class ReliableQueueTests
                 }
                 return count;
             }));
+        }
 
         //Task.WaitAll(ths.ToArray());
-        var rs = Task.WhenAll(ths).Result.Sum();
+        var rs = (await Task.WhenAll(ths)).Sum();
 
         Assert.Equal(1_000 * 100, rs);
     }
@@ -635,7 +639,7 @@ public class ReliableQueueTests
     }
 
     [Fact]
-    public void BlockTest()
+    public async void BlockTest()
     {
         // 一个队列两个消费，阻塞是否叠加
         var key = "ReliableQueue_BlockTest";
@@ -655,10 +659,26 @@ public class ReliableQueueTests
             await queue.TakeOneAsync(3);
         });
 
-        Task.WaitAll(t1, t2);
+        await Task.WhenAll(t1, t2);
 
         sw.Stop();
         XTrace.WriteLine("ReliableQueue_BlockTest: {0}", sw.Elapsed);
         Assert.True(sw.ElapsedMilliseconds < 3_000 + 500);
+    }
+
+    private class RedisMessage<T> { public MyModel Data { get; set; } }
+    [Fact]
+    public async Task TakeOneNotDataAsync()
+    {
+        var queue = _redis.GetReliableQueue<RedisMessage<MyModel>>("TakeOneNotDataAsync");
+        queue.RetryInterval = 60;//重新处理确认队列中死信的间隔。默认60s
+        RedisMessage<MyModel>? message = await queue.TakeOneAsync(10);
+        Assert.Null(message);
+
+
+        var queue2 = _redis.GetReliableQueue<Int32>("TakeOneNotDataAsync_Int32");
+        queue2.RetryInterval = 60;//重新处理确认队列中死信的间隔。默认60s
+        int messageInt = await queue2.TakeOneAsync(10);
+        Assert.Equal(0, messageInt);
     }
 }

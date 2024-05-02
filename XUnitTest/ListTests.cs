@@ -11,7 +11,7 @@ namespace XUnitTest;
 [Collection("Basic")]
 public class ListTests
 {
-    private readonly FullRedis _redis;
+    protected readonly FullRedis _redis;
 
     public ListTests()
     {
@@ -19,8 +19,10 @@ public class ListTests
 
         _redis = new FullRedis();
         _redis.Init(config);
+        _redis.Log = XTrace.Log;
+
 #if DEBUG
-        _redis.Log = NewLife.Log.XTrace.Log;
+        _redis.ClientLog = XTrace.Log;
 #endif
     }
 
@@ -196,7 +198,7 @@ public class ListTests
     }
 
     [Fact]
-    public void BRPOPLPUSH_Test()
+    public async void BRPOPLPUSH_Test()
     {
         // 一个队列多个消费，阻塞是否叠加
         var key = "lkey_brpoplpush";
@@ -226,10 +228,18 @@ public class ListTests
             XTrace.WriteLine("lkey_ack3");
         });
 
-        Task.WaitAll(t1, t2, t3);
+        await Task.WhenAll(t1, t2, t3);
 
         sw.Stop();
         XTrace.WriteLine("BRPOPLPUSH_BlockTest: {0}", sw.Elapsed);
         //Assert.True(sw.ElapsedMilliseconds < 3_000 + 500);
+    }
+}
+
+public class ListTests2 : ListTests
+{
+    public ListTests2() : base()
+    {
+        _redis.Prefix = "NewLife:";
     }
 }

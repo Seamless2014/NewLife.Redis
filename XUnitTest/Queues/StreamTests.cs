@@ -22,8 +22,10 @@ public class StreamTests
 
         _redis = new FullRedis();
         _redis.Init(config);
-#if DEBUG
         _redis.Log = XTrace.Log;
+
+#if DEBUG
+        _redis.ClientLog = XTrace.Log;
 #endif
     }
 
@@ -56,7 +58,7 @@ public class StreamTests
 
         // 尾部消费
         var vs1 = s.Read(null, 3);
-        Assert.Null(vs1);
+        Assert.Empty(vs1);
 
         // 原始读取
         vs1 = s.Read("0-0", 3);
@@ -98,10 +100,17 @@ public class StreamTests
     {
         var key = "stream_key";
 
+        // 测试XTrim
+        if (_redis.ContainsKey(key))
+        {
+            var rs = _redis.GetStream<String>(key);
+            rs.Trim(DateTime.Now.AddHours(-1));
+        }
+
         // 删除已有
         _redis.Remove(key);
         var s = _redis.GetStream<UserInfo>(key);
-        _redis.SetExpire(key, TimeSpan.FromMinutes(60));
+        //_redis.SetExpire(key, TimeSpan.FromMinutes(60));
 
         // 取出个数
         var count = s.Count;
@@ -113,6 +122,9 @@ public class StreamTests
 
         // 添加复杂对象
         var id = s.Add(new UserInfo { Name = "smartStone", Age = 36 });
+
+        // 有数据以后才能设置过期时间
+        _redis.SetExpire(key, TimeSpan.FromMinutes(60));
 
         var queue = s as IProducerConsumer<UserInfo>;
         var vs = new[] {
@@ -130,7 +142,7 @@ public class StreamTests
 
         // 独立消费
         var vs1 = s.Read(null, 3);
-        Assert.Null(vs1);
+        Assert.Empty(vs1);
 
         vs1 = s.Read("0-0", 3);
         Assert.Equal(3, vs1.Count);
@@ -153,6 +165,9 @@ public class StreamTests
 
         // 开始编号改变
         Assert.NotEqual(id, s.StartId);
+
+        //_redis.SetExpire(key, TimeSpan.FromMinutes(60));
+        //s.Add(new UserInfo { Name = "xxyy" });
     }
 
     [Fact]
@@ -348,16 +363,16 @@ public class StreamTests
 
         // 独立消费
         var vs1 = s.Read(null, 3);
-        Assert.Null(vs1);
+        Assert.Empty(vs1);
 
         vs1 = s.Read("0-0", 3);
-        Assert.Equal(1, vs1.Count);
+        Assert.Single(vs1);
         Assert.Equal(id, vs1[0].Id);
 
         // 取出来
         var vs2 = s.Take(2).ToList();
         Assert.Single(vs2);
-        Assert.Null(vs2[0].Name);
+        Assert.Empty(vs2[0].Name);
         Assert.Equal(36, vs2[0].Age);
     }
 
@@ -375,8 +390,9 @@ public class StreamTests
     {
         var key = "stream_Claim";
         var rds = _redis.CreateSub(9);
-#if DEBUG
         rds.Log = XTrace.Log;
+#if DEBUG
+        rds.ClientLog = XTrace.Log;
 #endif
 
         // 删除已有

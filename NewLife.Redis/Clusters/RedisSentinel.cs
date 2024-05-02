@@ -8,24 +8,30 @@ namespace NewLife.Caching.Clusters;
 public class RedisSentinel : RedisBase, IRedisCluster, IDisposable
 {
     #region 属性
+    /// <summary>节点集合</summary>
+    IList<IRedisNode> IRedisCluster.Nodes => Nodes.Select(x => (IRedisNode)x).ToList();
+
+    /// <summary>节点改变事件</summary>
+    public event EventHandler NodeChanged;
+
     /// <summary>集群节点</summary>
-    public RedisNode[] Nodes { get; protected set; }
+    public RedisNode[]? Nodes { get; protected set; }
 
     /// <summary>主从信息</summary>
-    public ReplicationInfo Replication { get; protected set; }
+    public ReplicationInfo? Replication { get; protected set; }
 
     /// <summary>是否根据解析得到的节点列表去设置外部Redis的节点地址</summary>
     public Boolean SetHostServer { get; set; }
 
-    private TimerX _timer;
-    RedisReplication _replication;
-    RedisCluster _cluster;
+    private TimerX? _timer;
+    RedisReplication? _replication;
+    RedisCluster? _cluster;
     #endregion
 
     #region 构造
     /// <summary>实例化</summary>
     /// <param name="redis"></param>
-    public RedisSentinel(Redis redis) : base(redis, null) { }
+    public RedisSentinel(Redis redis) : base(redis, null!) { }
 
     /// <summary>销毁</summary>
     public void Dispose() => _timer.TryDispose();
@@ -41,12 +47,12 @@ public class RedisSentinel : RedisBase, IRedisCluster, IDisposable
         if (SetHostServer && Nodes != null) _timer = new TimerX(s => GetNodes(), null, 60_000, 60_000) { Async = true };
     }
 
-    String _lastServers;
+    String? _lastServers;
     /// <summary>分析主从节点</summary>
-    public virtual IList<RedisNode> GetNodes()
+    public virtual IList<RedisNode>? GetNodes()
     {
         var showLog = Nodes == null;
-        if (showLog) WriteLog("分析[{0}]哨兵节点：", Redis?.Name);
+        if (showLog) WriteLog("分析[{0}]哨兵节点：", Redis.Name);
 
         var rs = Redis.Execute(r => r.Execute<String>("INFO", "Sentinel"));
         if (rs.IsNullOrEmpty()) return null;
@@ -63,14 +69,14 @@ public class RedisSentinel : RedisBase, IRedisCluster, IDisposable
         {
             foreach (var item in rep.Masters)
             {
-                if (!item.IP.IsNullOrEmpty()) servers.Add(item.EndPoint);
+                if (!item.EndPoint.IsNullOrEmpty()) servers.Add(item.EndPoint);
             }
         }
         if (rep.Slaves != null)
         {
             foreach (var item in rep.Slaves)
             {
-                if (!item.IP.IsNullOrEmpty()) servers.Add(item.EndPoint);
+                if (!item.EndPoint.IsNullOrEmpty()) servers.Add(item.EndPoint);
             }
         }
 
@@ -118,7 +124,7 @@ public class RedisSentinel : RedisBase, IRedisCluster, IDisposable
         return nodes;
     }
 
-    private String _lastNodes;
+    private String? _lastNodes;
     /// <summary>设置节点</summary>
     /// <param name="nodes"></param>
     protected void SetNodes(IList<RedisNode> nodes)
@@ -136,31 +142,35 @@ public class RedisSentinel : RedisBase, IRedisCluster, IDisposable
             {
                 if (node.EndPoint.IsNullOrEmpty()) return;
 
-                var uri = new NetUri(node.EndPoint);
+                var uri = new NetUri(node.EndPoint) { Type = NetType.Tcp };
                 if (uri.Port == 0) uri.Port = 6379;
                 uris.Add(uri);
             }
             if (uris.Count > 0) Redis.SetSevices(uris.ToArray());
         }
 
+        var changed = false;
         var str = nodes.Join("\n", e => $"{e.EndPoint}-{e.Slave}");
         if (_lastNodes != str)
         {
-            WriteLog("得到[{0}]节点：", Redis?.Name);
+            WriteLog("得到[{0}]哨兵节点：", Redis.Name);
             showLog = true;
+            changed = true;
             _lastNodes = str;
         }
         foreach (var node in nodes)
         {
             if (showLog) WriteLog("节点：{0} {1}", node.Slave ? "slave" : "master", node.EndPoint);
         }
+
+        if (changed) NodeChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>根据Key选择节点</summary>
     /// <param name="key">键</param>
     /// <param name="write">可写</param>
     /// <returns></returns>
-    public virtual IRedisNode SelectNode(String key, Boolean write) => null;
+    public virtual IRedisNode? SelectNode(String key, Boolean write) => null;
 
     /// <summary>根据异常重选节点</summary>
     /// <param name="key">键</param>
@@ -168,7 +178,7 @@ public class RedisSentinel : RedisBase, IRedisCluster, IDisposable
     /// <param name="node"></param>
     /// <param name="exception"></param>
     /// <returns></returns>
-    public virtual IRedisNode ReselectNode(String key, Boolean write, IRedisNode node, Exception exception) => null;
+    public virtual IRedisNode? ReselectNode(String key, Boolean write, IRedisNode node, Exception exception) => null;
 
     /// <summary>重置节点。设置成功状态</summary>
     /// <param name="node"></param>

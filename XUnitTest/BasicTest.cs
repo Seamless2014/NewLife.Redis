@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using NewLife;
 using NewLife.Caching;
+using NewLife.Log;
 using Xunit;
 
 // 所有测试用例放入一个汇编级集合，除非单独指定Collection特性
@@ -13,7 +14,7 @@ namespace XUnitTest;
 [Collection("Basic")]
 public class BasicTest
 {
-    private readonly FullRedis _redis;
+    protected readonly FullRedis _redis;
 
     public BasicTest()
     {
@@ -22,9 +23,10 @@ public class BasicTest
         _redis = new FullRedis();
         _redis.Init(config);
         _redis.Db = 2;
+        _redis.Log = XTrace.Log;
 
 #if DEBUG
-        _redis.Log = NewLife.Log.XTrace.Log;
+        _redis.ClientLog = XTrace.Log;
 #endif
     }
 
@@ -42,14 +44,16 @@ public class BasicTest
             if (config.IsNullOrEmpty()) config = "server=127.0.0.1:6379;db=3";
             if (!File.Exists(file)) File.WriteAllText(file.EnsureDirectory(true).GetFullPath(), config);
 
+            XTrace.WriteLine("Redis配置：{0}", config);
+
             return _config = config;
         }
     }
 
-    [Fact(DisplayName = "信息测试", Timeout = 1000)]
+    [Fact(DisplayName = "信息测试")]
     public void InfoTest()
     {
-        var inf = _redis.Execute(null, client => client.Execute<String>("info"));
+        var inf = _redis.Execute(null, (client, k) => client.Execute<String>("info"));
         Assert.NotNull(inf);
     }
 
@@ -80,8 +84,8 @@ public class BasicTest
     public void SearchTest()
     {
         var ic = _redis;
-        var key = "Name";
-        var key2 = "Name2";
+        var key = "Company";
+        var key2 = "Company2";
 
         // 添加删除
         ic.Set(key, Environment.UserName);
@@ -92,7 +96,7 @@ public class BasicTest
         //var ss = ic.Search("*");
         //Assert.True(ss.Length > 0);
 
-        var ss2 = ic.Search("Name*", 10).ToArray();
+        var ss2 = ic.Search("Company*", 10).ToArray();
         Assert.True(ss2.Length > 0);
 
         //var ss3 = ic.Search("ReliableQueue:Status:*", 100).ToArray();
@@ -105,5 +109,13 @@ public class BasicTest
         var rds = _redis.CreateSub(0);
         var inf = rds.GetInfo(true);
         Assert.NotNull(inf);
+    }
+}
+
+public class BasicTest2 : BasicTest
+{
+    public BasicTest2() : base()
+    {
+        _redis.Prefix = "NewLife:";
     }
 }

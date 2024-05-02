@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NewLife.Caching;
 using NewLife.Caching.Queues;
+using NewLife.Log;
 using NewLife.Security;
 using Xunit;
 
@@ -22,8 +23,10 @@ public class QueueTests
 
         _redis = new FullRedis();
         _redis.Init(config);
+        _redis.Log = XTrace.Log;
+
 #if DEBUG
-        _redis.Log = NewLife.Log.XTrace.Log;
+        _redis.ClientLog = XTrace.Log;
 #endif
     }
 
@@ -161,6 +164,8 @@ public class QueueTests
     {
         var key = "Queue_benchmark";
 
+        _redis.Remove(key);
+
         var q = _redis.GetQueue<String>(key);
         for (var i = 0; i < 1_000; i++)
         {
@@ -186,7 +191,7 @@ public class QueueTests
     }
 
     [Fact]
-    public void Queue_Benchmark_Mutilate()
+    public async void Queue_Benchmark_Mutilate()
     {
         var key = "Queue_benchmark_mutilate";
         _redis.Remove(key);
@@ -217,7 +222,7 @@ public class QueueTests
                 }
             }));
 
-        Task.WaitAll(ths.ToArray());
+        await Task.WhenAll(ths.ToArray());
 
         Assert.Equal(1_000 * 100, count);
     }

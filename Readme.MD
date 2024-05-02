@@ -6,7 +6,7 @@
 ![Nuget](https://img.shields.io/nuget/v/newlife.redis?logo=nuget)
 ![Nuget (with prereleases)](https://img.shields.io/nuget/vpre/newlife.redis?label=dev%20nuget&logo=nuget)
 
-## [[English]](Readme.en.md)
+## [[English]](https://github.com/NewLifeX/NewLife.Redis/blob/master/Readme.en.md)
 
 `NewLife.Redis` 是一个Redis客户端组件，以高性能处理大数据实时计算为目标。  
 Redis协议基础实现Redis/RedisClient位于[X组件](https://github.com/NewLifeX/X)，本库为扩展实现，主要增加列表结构、哈希结构、队列等高级功能。  
@@ -17,9 +17,9 @@ Nuget：NewLife.Redis
 
 ---
 ### 特性
-* 在ZTO大数据实时计算广泛应用，200多个Redis实例稳定工作一年多，每天处理近1亿包裹数据，日均调用量80亿次
+* 2017年在ZTO大数据实时计算广泛应用，200多个Redis实例稳定工作一年多，每天处理近1亿条包裹数据，日均调用量80亿次
 * 低延迟，Get/Set操作平均耗时200~600us（含往返网络通信）
-* 大吞吐，自带连接池，最大支持1000并发 
+* 大吞吐，自带连接池，最大支持100000并发 
 * 高性能，支持二进制序列化
 
 ---
@@ -35,6 +35,21 @@ Nuget：NewLife.Redis
 以上经验，源自于300多个实例4T以上空间一年多稳定工作的经验，并按照重要程度排了先后顺序，可根据场景需要酌情采用！
 
 ---
+### 推荐用法
+推荐使用单例模式,Redis内部有连接池并且支持多线程并发访问
+```csharp
+public static class RedisHelper
+{
+    /// <summary>
+    /// Redis实例
+    /// </summary>
+    public static FullRedis redisConnection { get; set; } = new FullRedis("127.0.0.1:6379", "123456", 4);
+}
+
+Console.WriteLine(RedisHelper.redisConnection.Keys);
+``` 
+
+---
 ### 基础 Redis
 Redis实现标准协议以及基础字符串操作，完整实现由独立开源项目[NewLife.Redis](https://github.com/NewLifeX/NewLife.Redis)提供。  
 采取连接池加同步阻塞架构，具有超低延迟（200~600us）以及超高吞吐量的特点。  
@@ -46,7 +61,7 @@ Redis实现标准协议以及基础字符串操作，完整实现由独立开源
 var rds = new FullRedis("127.0.0.1:6379", "pass", 7);
 //var rds = new FullRedis();
 //rds.Init("server=127.0.0.1:6379;password=pass;db=7");
-rds.Log = XTrace.Log; // 调试日志。正式使用时注释
+rds.Log = XTrace.Log;
 ```
 
 ### 基本操作
@@ -65,6 +80,8 @@ class User
 添删改查：  
 ```csharp
 var rds = new FullRedis("127.0.0.1", null, 7);
+rds.Log = XTrace.Log;
+rds.ClientLog = XTrace.Log; // 调试日志。正式使用时注释
 var user = new User { Name = "NewLife", CreateTime = DateTime.Now };
 rds.Set("user", user, 3600);
 var user2 = rds.Get<User>("user");
@@ -101,6 +118,8 @@ GetAll/SetAll 在Redis上是很常用的批量操作，同时获取或设置多�
 批量操作：
 ```csharp
 var rds = new FullRedis("127.0.0.1", null, 7);
+rds.Log = XTrace.Log;
+rds.ClientLog = XTrace.Log; // 调试日志。正式使用时注释
 var dic = new Dictionary<String, Object>
 {
     ["name"] = "NewLife",
@@ -136,6 +155,8 @@ name=NewLife,time=2018-09-25 15:56:26,count=1234
 高级操作：  
 ```csharp
 var rds = new FullRedis("127.0.0.1", null, 7);
+rds.Log = XTrace.Log;
+rds.ClientLog = XTrace.Log; // 调试日志。正式使用时注释
 var flag = rds.Add("count", 5678);
 XTrace.WriteLine(flag ? "Add成功" : "Add失败");
 var ori = rds.Replace("count", 777);

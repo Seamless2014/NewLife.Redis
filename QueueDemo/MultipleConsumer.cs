@@ -7,7 +7,7 @@ namespace QueueDemo;
 
 class MultipleConsumer
 {
-    public static void Start(FullRedis redis, String connStr)
+    public static void Start(FullRedis redis)
     {
         var topic = "MultipleConsumer";
 
@@ -17,16 +17,16 @@ class MultipleConsumer
             //不同版本的redis错误消息关键词可能不一样，这里注意设置合适的关键词
             ConsumeGroupExistErrMsgKeyWord = "exist"
         };
-        mq.Connect(connStr, "BCGCommandQueue");
-        mq.Received += (data) =>
+        mq.Connect(redis, topic);
+        mq.Received += (msgId,data) =>
         {
-            XTrace.WriteLine($"[Redis多消费组可重复消费的队列]收到列队消息：{data.Data.ToJson()}");
+            XTrace.WriteLine($"[Redis多消费组]收到列队消息，ID：{msgId}，内容：{data.Data.ToJson()}");
         };
         mq.StopSubscribe += (msg) =>
         {
             //队列不存在等情况都会导致停止
             //遇到异常时停止订阅，等待5秒后重新订阅，不遗漏消息
-            XTrace.WriteLine($"[Redis多消费组可重复消费的队列]停止订阅原因：{msg}");
+            XTrace.WriteLine($"[Redis多消费组]停止订阅原因：{msg}");
             XTrace.WriteLine("5秒后重新自动订阅……");
             Thread.Sleep(5000);
             mq.Subscribe(consumerName);
@@ -35,7 +35,7 @@ class MultipleConsumer
         {
             //一般不会进入这里。（可能这个事件还可以再优化一下）
             XTrace.WriteLine($"因“{msg}”断开连接，进入重连模式。");
-            mq.Connect(connStr, "BCGCommandQueue");
+            mq.Connect(redis, topic);
         };
         mq.Subscribe(consumerName); //开始订阅消息
 
